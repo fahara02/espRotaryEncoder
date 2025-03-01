@@ -17,30 +17,6 @@ namespace Rotary
 
 class Encoder
 {
-  public:
-	Encoder(uint8_t steps, gpio_num_t aPin, gpio_num_t bPin, gpio_num_t buttonPin = GPIO_NUM_NC,
-			PullType encoderPinPull = PullType::EXTERNAL_PULLUP,
-			PullType buttonPinPull = PullType::EXTERNAL_PULLDOWN);
-
-	void setBoundaries(long minValue = -100, long maxValue = 100, bool circleValues = false);
-
-	void setup(void (*ISR_callback)(void));
-	void setup(void (*ISR_callback)(void), void (*ISR_button)(void));
-
-	void begin();
-	void reset(long newValue = 0);
-	long readEncoder() const;
-	long encoderChanged();
-	void setEncoderValue();
-	void enable();
-	void disable();
-
-	unsigned long getAcceleration();
-	void setAcceleration(unsigned long acceleration);
-	void disableAcceleration();
-	ButtonState readButtonState();
-	void IRAM_ATTR encoderISR();
-	void IRAM_ATTR buttonISR();
 
   private:
 	gpio_num_t aPin_;
@@ -82,6 +58,32 @@ class Encoder
 	int8_t updateOldABState();
 	static void EncoderMonitorTask(void* param);
 	static void ButtonMonitorTask(void* param);
+
+  public:
+	Encoder(uint8_t steps, gpio_num_t aPin, gpio_num_t bPin, gpio_num_t buttonPin = GPIO_NUM_NC,
+			PullType encoderPinPull = PullType::EXTERNAL_PULLUP,
+			PullType buttonPinPull = PullType::EXTERNAL_PULLDOWN);
+
+	void setBoundaries(long minValue = -100, long maxValue = 100, bool circleValues = false);
+
+	void setup(void (*ISR_callback)(void));
+	void setup(void (*ISR_callback)(void), void (*ISR_button)(void));
+	static void setupTimer();
+	void begin();
+	void reset(long newValue = 0);
+	void enable() { this->isEnabled_ = true; }
+	void disable() { this->isEnabled_ = false; }
+	long readEncoder() const;
+	void setEncoderValue(long newValue) { reset(newValue); };
+	long encoderChanged();
+
+	ButtonState readButtonState() { return buttonState_; };
+	unsigned long getAcceleration() { return this->rotaryAccelerationCoef_; }
+	void setAcceleration(unsigned long acceleration) { rotaryAccelerationCoef_ = acceleration; }
+	void disableAcceleration() { setAcceleration(0); }
+
+	void IRAM_ATTR encoderISR();
+	void IRAM_ATTR buttonISR();
 };
 
 } // namespace Rotary
