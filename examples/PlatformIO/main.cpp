@@ -21,6 +21,6 @@ void loop()
 {
 
 	Serial.println("....");
-	Serial.printf("count is %llu \n", encoder.readEncoder());
+	Serial.printf("count is %ld \n", encoder.readEncoder());
 	delay(500);
 }
