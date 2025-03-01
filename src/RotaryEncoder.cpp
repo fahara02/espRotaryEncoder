@@ -10,19 +10,17 @@ Encoder::Encoder(uint8_t steps, gpio_num_t aPin, gpio_num_t bPin, gpio_num_t but
 	encoderPinPull_(encoderPinPull), buttonPinPull_(buttonPinPull), isEnabled_(true)
 {
 }
-<<<<<<< HEAD
-void Encoder::setEncoderValue(long newValue) { reset(newValue); };
+
+void Encoder::setEncoderValue(long newValue) { reset(newValue); }
 void Encoder::enable() { this->isEnabled_ = true; }
 void Encoder::disable() { this->isEnabled_ = false; }
-ButtonState Encoder::readButtonState() { return buttonState_; };
+ButtonState Encoder::readButtonState() { return buttonState_; }
 unsigned long Encoder::getAcceleration() { return this->rotaryAccelerationCoef_; }
 void Encoder::setAcceleration(unsigned long acceleration)
 {
 	rotaryAccelerationCoef_ = acceleration;
 }
 void Encoder::disableAcceleration() { setAcceleration(0); }
-=======
->>>>>>> 8b129a96c935c3142931d1bb8dcabb92a66ce363
 
 void Encoder::configurePin(gpio_num_t pin, gpio_int_type_t intrType, PullType pullType)
 {
@@ -75,7 +73,7 @@ void Encoder::initGPIOS()
 		gpio_isr_handler_add(
 			buttonPin_, [](void* arg) { static_cast<Encoder*>(arg)->buttonISR(); }, this);
 	}
-};
+}
 void Encoder::begin()
 {
 	initGPIOS();
@@ -184,7 +182,7 @@ void Encoder::EncoderMonitorTask(void* param)
 						}
 					}
 				}
-<<<<<<< HEAD
+
 				long maxEncoderValue = encoder->maxEncoderValue_;
 				long minEncoderValue = encoder->minEncoderValue_;
 				long adjustedValue = encoderPosition / encoderSteps;
@@ -216,51 +214,47 @@ void Encoder::EncoderMonitorTask(void* param)
 			}
 		}
 
-=======
-				// long maxEncoderValue = encoder->maxEncoderValue_;
-				// long minEncoderValue = encoder->minEncoderValue_;
-				// long adjustedValue = encoderPosition / encoderSteps;
-				// long maxAdjusted = maxEncoderValue / encoderSteps;
-				// long minAdjusted = minEncoderValue / encoderSteps;
+		// long maxEncoderValue = encoder->maxEncoderValue_;
+		// long minEncoderValue = encoder->minEncoderValue_;
+		// long adjustedValue = encoderPosition / encoderSteps;
+		// long maxAdjusted = maxEncoderValue / encoderSteps;
+		// long minAdjusted = minEncoderValue / encoderSteps;
 
-				// if(adjustedValue > maxAdjusted)
-				// {
-				// 	encoderPosition =
-				// 		encoder->circleValues_ ?
-				// 			minEncoderValue + ((adjustedValue - maxAdjusted) * encoderSteps) :
-				// 			maxEncoderValue;
-				// }
-				// else if(adjustedValue < minAdjusted)
-				// {
-				// 	encoderPosition =
-				// 		encoder->circleValues_ ?
-				// 			maxEncoderValue + ((adjustedValue - minAdjusted) * encoderSteps) :
-				// 			minEncoderValue;
-				// }
-				// Calculate adjusted value and apply boundaries with wrapping
-				long minVal = encoder->minEncoderValue_ / encoderSteps;
-				long maxVal = encoder->maxEncoderValue_ / encoderSteps;
-				long range = maxVal - minVal + 1;
-				long currentValue = encoderPosition / encoderSteps;
+		// if(adjustedValue > maxAdjusted)
+		// {
+		// 	encoderPosition =
+		// 		encoder->circleValues_ ?
+		// 			minEncoderValue + ((adjustedValue - maxAdjusted) * encoderSteps) :
+		// 			maxEncoderValue;
+		// }
+		// else if(adjustedValue < minAdjusted)
+		// {
+		// 	encoderPosition =
+		// 		encoder->circleValues_ ?
+		// 			maxEncoderValue + ((adjustedValue - minAdjusted) * encoderSteps) :
+		// 			minEncoderValue;
+		// }
+		// Calculate adjusted value and apply boundaries with wrapping
+		long minVal = encoder->minEncoderValue_ / encoderSteps;
+		long maxVal = encoder->maxEncoderValue_ / encoderSteps;
+		long range = maxVal - minVal + 1;
+		long currentValue = encoderPosition / encoderSteps;
 
-				if(currentValue > maxVal || currentValue < minVal)
-				{
-					// Compute wrapped value using modulo arithmetic
-					long wrappedValue = ((currentValue - minVal) % range + range) % range + minVal;
-					encoderPosition = wrappedValue * encoderSteps;
-				}
-				encoder->encoderPosition_.store(encoderPosition);
-				encoder->lastMovementTime_.store(now);
-				encoder->oldDirection_.store(currentDirection);
-			}
-			if(auto callback = reinterpret_cast<void (*)()>(
-				   encoder->encoderCallback_.load(std::memory_order_acquire)))
-			{
-				callback();
-			}
+		if(currentValue > maxVal || currentValue < minVal)
+		{
+			// Compute wrapped value using modulo arithmetic
+			long wrappedValue = ((currentValue - minVal) % range + range) % range + minVal;
+			encoderPosition = wrappedValue * encoderSteps;
 		}
+		encoder->encoderPosition_.store(encoderPosition);
+		encoder->lastMovementTime_.store(now);
+		encoder->oldDirection_.store(currentDirection);
 
->>>>>>> 8b129a96c935c3142931d1bb8dcabb92a66ce363
+		if(auto callback = reinterpret_cast<void (*)()>(
+			   encoder->encoderCallback_.load(std::memory_order_acquire)))
+		{
+			callback();
+		}
 		vTaskDelay(pdMS_TO_TICKS(10));
 	}
 	vTaskDelete(NULL);
@@ -335,10 +329,7 @@ void Encoder::setBoundaries(long minValue, long maxValue, bool circleValues)
 }
 long Encoder::readEncoder() const
 {
-<<<<<<< HEAD
-=======
 
->>>>>>> 8b129a96c935c3142931d1bb8dcabb92a66ce363
 	long position = encoderPosition_.load() / encoderSteps_;
 	if(position > maxEncoderValue_ / encoderSteps_)
 		return maxEncoderValue_ / encoderSteps_;
@@ -346,24 +337,7 @@ long Encoder::readEncoder() const
 		return minEncoderValue_ / encoderSteps_;
 	return position;
 }
-<<<<<<< HEAD
-void Encoder::reset(long newValue)
-{
 
-	long adjustedValue = newValue * encoderSteps_ + correctionOffset_;
-	encoderPosition_ = adjustedValue;
-
-	if(encoderPosition_ > maxEncoderValue_)
-	{
-		encoderPosition_ = circleValues_ ? minEncoderValue_ : maxEncoderValue_;
-	}
-	if(encoderPosition_ < minEncoderValue_)
-	{
-		encoderPosition_ = circleValues_ ? maxEncoderValue_ : minEncoderValue_;
-	}
-
-	lastReadEncoderPosition_ = encoderPosition_ / encoderSteps_;
-=======
 // void Encoder::reset(long newValue)
 // {
 
@@ -403,15 +377,11 @@ void Encoder::reset(long newValue)
 	}
 
 	lastReadEncoderPosition_ = encoderPosition_ / steps;
->>>>>>> 8b129a96c935c3142931d1bb8dcabb92a66ce363
 }
 bool Encoder::isEncoderButtonDown() { return gpio_get_level(buttonPin_) == 0 ? false : true; }
 
-<<<<<<< HEAD
 bool Encoder::isEncoderButtonDown() { return gpio_get_level(buttonPin_) == 0 ? false : true; }
 
-=======
->>>>>>> 8b129a96c935c3142931d1bb8dcabb92a66ce363
 bool Encoder::isEncoderButtonClicked(unsigned long maximumWaitMilliseconds)
 {
 	static enum class ButtonClickState {
