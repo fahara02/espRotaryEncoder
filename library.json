@@ -1,0 +1,45 @@
+{
+    "name": "espRotaryEncoder",
+    "version": "1.0.0",
+    "description": "RotaryEncoder library for ESP32 and Arduino",
+    "keywords": [
+        "rotary encoder"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/fahara02/espRotaryEncoder.git"
+    },
+    "authors": [
+        {
+            "name": "Faruk Hannan",
+            "email": "idea3d.faruk@gmail.com",
+            "url": "https://yourwebsite.com",
+            "maintainer": true
+        }
+    ],
+    "license": "MIT",
+    "frameworks": [
+        "arduino",
+        "espidf"
+    ],
+    "platforms": [
+        "espressif32"
+    ],
+    "export": {
+        "exclude": [
+            "test",
+            "docs",
+            "extras"
+        ]
+    },
+    "dependencies": {
+        "etlcpp/Embedded Template Library": "^20.39.4"
+    },
+    "headers": [
+        "RotaryEncoder.hpp",
+        "RotaryEncoderNumberSelector.hpp"
+    ],
+    "build": {
+        "libLDFMode": "deep+"
+    }
+}
