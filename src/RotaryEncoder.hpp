@@ -14,7 +14,15 @@
 
 namespace Rotary
 {
-
+struct EncoderData
+{
+	long position = 0;
+	int8_t oldDirection = 0;
+	unsigned long lastMovementTime = 0;
+	long minValue = LONG_MIN;
+	long maxValue = LONG_MAX;
+	uint8_t steps = 4;
+};
 class Encoder
 {
   public:
@@ -35,8 +43,8 @@ class Encoder
 	void setEncoderValue(long newValue);
 	long encoderChanged();
 
-	ButtonState readButtonState();
-	unsigned long getAcceleration();
+	ButtonState readButtonState() const;
+	unsigned long getAcceleration() const;
 	void setAcceleration(unsigned long acceleration);
 	void disableAcceleration();
 
@@ -53,9 +61,11 @@ class Encoder
 	PullType encoderPinPull_ = PullType::NONE;
 	PullType buttonPinPull_ = PullType::NONE;
 	bool isEnabled_;
+	EncoderData data_;
 	bool circleValues_ = false;
 	long lastReadEncoderPosition_ = 0;
 	unsigned long rotaryAccelerationCoef_ = 150;
+
 	long minEncoderValue_ = LONG_MIN;
 	long maxEncoderValue_ = LONG_MAX;
 	std::atomic<int8_t> oldAB_{0};
@@ -67,7 +77,7 @@ class Encoder
 	std::atomic<ButtonState> buttonState_{ButtonState::UP};
 
 	bool isEncoderButtonClicked(unsigned long maximumWaitMilliseconds = 300);
-	bool isEncoderButtonDown();
+	bool isEncoderButtonDown() const;
 	// Helper Functions
 	void configurePin(gpio_num_t pin, gpio_int_type_t intrType, PullType pullType);
 	bool debounce(bool currentState, unsigned long& lastTime, unsigned long delay);
@@ -81,6 +91,10 @@ class Encoder
 
 	TaskHandle_t encoderTaskHandle = nullptr;
 	TaskHandle_t buttonTaskHandle = nullptr;
+
+	long updatePosition(EncoderData& data, int8_t direction, unsigned long currentTime,
+						unsigned long acceCoef);
+	long wrapPosition(EncoderData& data);
 };
 
 } // namespace Rotary
