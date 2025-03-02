@@ -37,6 +37,7 @@
     },
     "headers": [
         "RotaryEncoder.hpp",
+        "MenuSelector.hpp",
         "RotaryEncoderNumberSelector.hpp"
     ],
     "build": {
