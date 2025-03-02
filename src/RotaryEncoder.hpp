@@ -11,90 +11,102 @@
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
+#include "etl/algorithm.h"
 
 namespace Rotary
 {
-struct EncoderData
+enum class ButtonState
 {
-	long position = 0;
-	int8_t oldDirection = 0;
-	unsigned long lastMovementTime = 0;
-	long minValue = LONG_MIN;
-	long maxValue = LONG_MAX;
-	uint8_t steps = 4;
+	DOWN = 0,
+	PUSHED = 1,
+	UP = 2,
+	RELEASED = 3,
+	BTN_DISABLED = 99,
 };
+struct EncoderConfig
+{
+	const uint8_t steps;
+	const long min_value;
+	const long max_value;
+	const bool circular;
+	const unsigned long acceleration;
+	const int correction_offset;
+	const long min_count;
+	const long max_count;
+	const long range;
+	EncoderConfig(uint8_t step = 4) :
+		steps(step), max_value(LONG_MAX), min_value(LONG_MIN), circular(false), acceleration(150),
+		correction_offset(2), min_count(min_value / steps), max_count(max_value / steps),
+		range(max_count - min_count + 1)
+	{
+	}
+	EncoderConfig(uint8_t step, long maxV, long minV, bool iscircular, unsigned long acc = 150,
+				  int off = 2) :
+		steps(step), max_value(maxV * step), min_value(minV * step), circular(iscircular),
+		acceleration(acc), correction_offset(off), min_count(min_value / steps),
+		max_count(max_value / steps), range(max_count - min_count + 1)
+	{
+	}
+};
+enum class PullType
+{
+	INTERNAL_PULLUP,
+	INTERNAL_PULLDOWN,
+	EXTERNAL_PULLUP,
+	EXTERNAL_PULLDOWN,
+	NONE
+};
+
 class Encoder
 {
   public:
 	Encoder(uint8_t steps, gpio_num_t aPin, gpio_num_t bPin, gpio_num_t buttonPin = GPIO_NUM_NC,
 			PullType encoderPinPull = PullType::EXTERNAL_PULLUP,
 			PullType buttonPinPull = PullType::EXTERNAL_PULLDOWN);
-
-	void setBoundaries(long minValue = -100, long maxValue = 100, bool circleValues = false);
-
-	void setup(void (*ISR_callback)(void));
-	void setup(void (*ISR_callback)(void), void (*ISR_button)(void));
+	void configure(const EncoderConfig& config);
+	void set_range(long minValue = -100, long maxValue = 100, bool circleValues = false);
 
 	void begin();
 	void reset(long newValue = 0);
-	void enable();
-	void disable();
-	long readEncoder() const;
-	void setEncoderValue(long newValue);
-	long encoderChanged();
+	long read() const;
+	ButtonState button() const { return btn_state_.load(); }
+	void button_state(ButtonState new_state) { return btn_state_.store(new_state); }
 
-	ButtonState readButtonState() const;
-	unsigned long getAcceleration() const;
-	void setAcceleration(unsigned long acceleration);
-	void disableAcceleration();
-
-	void IRAM_ATTR encoderISR();
-	void IRAM_ATTR buttonISR();
+	bool is_btn_clicked(unsigned long max_wait);
+	void set_callbacks(void (*encoder_cb)(), void (*btn_cb)() = nullptr);
 
   private:
-	gpio_num_t aPin_;
-	gpio_num_t bPin_;
-	gpio_num_t buttonPin_;
+	struct State
+	{
+		std::atomic<long> position{0};
+		std::atomic<int8_t> direction{0};
+		std::atomic<unsigned long> last_update{0};
+	};
+	void init_gpio();
+	void isr_handler();
+	void btn_isr_handler();
+	void monitor_encoder();
+	void monitor_button();
+	void update_position(int8_t dir);
+	long apply_bounds(long value) const;
+	void configure_pin(gpio_num_t pin, gpio_int_type_t intr_type, PullType pull_type);
 
-	uint8_t encoderSteps_;
-	int correctionOffset_ = 2;
-	PullType encoderPinPull_ = PullType::NONE;
-	PullType buttonPinPull_ = PullType::NONE;
-	bool isEnabled_;
-	EncoderData data_;
-	bool circleValues_ = false;
-	long lastReadEncoderPosition_ = 0;
-	unsigned long rotaryAccelerationCoef_ = 150;
+	gpio_num_t clk_, dt_, btn_;
+	PullType encoder_pull_, btn_pull_;
+	// EncoderConfig config_;
+	std::unique_ptr<EncoderConfig> config_;
+	State state_;
+	std::atomic<void (*)()> encoder_cb_{nullptr};
+	std::atomic<void (*)()> btn_cb_{nullptr};
+	std::atomic<ButtonState> btn_state_{ButtonState::UP};
+	int correction_offset_ = 2;
+	static constexpr uint32_t DEBOUNCE_MS = 10;
+	static constexpr int8_t STATE_TABLE[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
 
-	long minEncoderValue_ = LONG_MIN;
-	long maxEncoderValue_ = LONG_MAX;
-	std::atomic<int8_t> oldAB_{0};
-	std::atomic<long> encoderPosition_{0};
-	std::atomic<int8_t> oldDirection_{0};
-	std::atomic<unsigned long> lastMovementTime_{0};
-
-	const int8_t encoderStates_[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
-	std::atomic<ButtonState> buttonState_{ButtonState::UP};
-
-	bool isEncoderButtonClicked(unsigned long maximumWaitMilliseconds = 300);
-	bool isEncoderButtonDown() const;
-	// Helper Functions
-	void configurePin(gpio_num_t pin, gpio_int_type_t intrType, PullType pullType);
-	bool debounce(bool currentState, unsigned long& lastTime, unsigned long delay);
-	void initGPIOS();
-	int8_t updateOldABState();
-
-	std::atomic<void*> encoderCallback_{nullptr};
-	std::atomic<void*> buttonCallback_{nullptr};
-	static void EncoderMonitorTask(void* param);
-	static void ButtonMonitorTask(void* param);
+	// // Helper Functions
 
 	TaskHandle_t encoderTaskHandle = nullptr;
 	TaskHandle_t buttonTaskHandle = nullptr;
-
-	long updatePosition(EncoderData& data, int8_t direction, unsigned long currentTime,
-						unsigned long acceCoef);
-	long wrapPosition(EncoderData& data);
 };
 
 } // namespace Rotary

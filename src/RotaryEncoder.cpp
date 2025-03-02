@@ -12,47 +12,35 @@ static volatile unsigned long lastInterruptTime = 0;
 //////////////////////
 /// Constructor  ///
 //////////////////////
-Encoder::Encoder(uint8_t steps, gpio_num_t aPin, gpio_num_t bPin, gpio_num_t buttonPin,
-				 PullType encoderPinPull, PullType buttonPinPull) :
-	aPin_(aPin), bPin_(bPin), buttonPin_(buttonPin), encoderSteps_(steps),
-	encoderPinPull_(encoderPinPull), buttonPinPull_(buttonPinPull), isEnabled_(true)
+
+Encoder::Encoder(uint8_t steps, gpio_num_t clk, gpio_num_t dt, gpio_num_t btn,
+				 PullType encoder_pull, PullType btn_pull) :
+	clk_(clk), dt_(dt), btn_(btn), encoder_pull_(encoder_pull), btn_pull_(btn_pull),
+	config_(std::make_unique<EncoderConfig>())
 {
 }
 
-//////////////////////////
-/// Basic Operations  ///
-//////////////////////////
-
-void Encoder::setEncoderValue(long newValue) { reset(newValue); }
-
-void Encoder::enable() { isEnabled_ = true; }
-
-void Encoder::disable() { isEnabled_ = false; }
-
-ButtonState Encoder::readButtonState() const { return buttonState_; }
-
-unsigned long Encoder::getAcceleration() const { return rotaryAccelerationCoef_; }
-
-void Encoder::setAcceleration(unsigned long acceleration)
+//////////////////////
+///  Configuration ///
+//////////////////////
+void Encoder::configure(const EncoderConfig& cfg)
 {
-	rotaryAccelerationCoef_ = acceleration;
+	config_ = std::make_unique<EncoderConfig>(cfg);
 }
-
-void Encoder::disableAcceleration() { setAcceleration(0); }
 
 //////////////////////////
 /// GPIO Configuration ///
 //////////////////////////
 
-void Encoder::configurePin(gpio_num_t pin, gpio_int_type_t intrType, PullType pullType)
+void Encoder::configure_pin(gpio_num_t pin, gpio_int_type_t intr_type, PullType pull_type)
 {
 	gpio_config_t ioConfig = {};
-	ioConfig.intr_type = intrType;
+	ioConfig.intr_type = intr_type;
 	ioConfig.mode = GPIO_MODE_INPUT;
 	ioConfig.pin_bit_mask = (1ULL << pin);
 
 	// Configure pull-up/pull-down settings
-	switch(pullType)
+	switch(pull_type)
 	{
 		case PullType::NONE:
 			ioConfig.pull_down_en = GPIO_PULLDOWN_DISABLE;
@@ -78,41 +66,38 @@ void Encoder::configurePin(gpio_num_t pin, gpio_int_type_t intrType, PullType pu
 	gpio_config(&ioConfig);
 }
 
-void Encoder::initGPIOS()
+void Encoder::init_gpio()
 {
 	// Configure encoder pins
-	configurePin(aPin_, GPIO_INTR_ANYEDGE, encoderPinPull_);
-	configurePin(bPin_, GPIO_INTR_ANYEDGE, encoderPinPull_);
-	if(buttonPin_ != GPIO_NUM_NC)
+	configure_pin(clk_, GPIO_INTR_ANYEDGE, encoder_pull_);
+	configure_pin(dt_, GPIO_INTR_ANYEDGE, encoder_pull_);
+	if(btn_ != GPIO_NUM_NC)
 	{
-		configurePin(buttonPin_, GPIO_INTR_POSEDGE, buttonPinPull_);
+		configure_pin(btn_, GPIO_INTR_POSEDGE, btn_pull_);
 	}
 	// Install ISR service and attach handlers
 	gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
-	gpio_isr_handler_add(aPin_, [](void* arg) { static_cast<Encoder*>(arg)->encoderISR(); }, this);
-	gpio_isr_handler_add(bPin_, [](void* arg) { static_cast<Encoder*>(arg)->encoderISR(); }, this);
-	if(buttonPin_ != GPIO_NUM_NC)
+	gpio_isr_handler_add(clk_, [](void* arg) { static_cast<Encoder*>(arg)->isr_handler(); }, this);
+	gpio_isr_handler_add(dt_, [](void* arg) { static_cast<Encoder*>(arg)->isr_handler(); }, this);
+	if(btn_ != GPIO_NUM_NC)
 	{
 		gpio_isr_handler_add(
-			buttonPin_, [](void* arg) { static_cast<Encoder*>(arg)->buttonISR(); }, this);
+			btn_, [](void* arg) { static_cast<Encoder*>(arg)->btn_isr_handler(); }, this);
 	}
 }
 
 void Encoder::begin()
 {
-	initGPIOS();
+	init_gpio();
+	xTaskCreatePinnedToCore([](void* arg) { static_cast<Encoder*>(arg)->monitor_encoder(); },
+							"encoder", 4096, this, EncoderTask_Priority, &encoderTaskHandle,
+							EncoderTask_CORE);
 
-	xTaskCreatePinnedToCore(EncoderMonitorTask, "EncoderMonitor", EncoderTaskStack, this,
-							EncoderTask_Priority, &encoderTaskHandle, EncoderTask_CORE);
-
-	if(buttonPin_ != GPIO_NUM_NC)
+	if(btn_ != GPIO_NUM_NC)
 	{
-		xTaskCreatePinnedToCore(ButtonMonitorTask, "ButtonMonitor", BtnTaskStack, this,
-								BtnTask_Priority, &buttonTaskHandle, BtnTask_CORE);
-	}
-	if(encoderTaskHandle == nullptr)
-	{
-		ESP_LOGE(LOG_TAG, "Task handle is null; notification cannot be sent.");
+		xTaskCreatePinnedToCore([](void* arg) { static_cast<Encoder*>(arg)->monitor_button(); },
+								"button", BtnTaskStack, this, BtnTask_Priority, &buttonTaskHandle,
+								BtnTask_CORE);
 	}
 }
 
@@ -120,390 +105,259 @@ void Encoder::begin()
 /// Callback Setup     ///
 //////////////////////////
 
-void Encoder::setup(void (*ISR_callback)(void))
+void Encoder::set_callbacks(void (*encoder_cb)(), void (*btn_cb)())
 {
-	encoderCallback_.store(reinterpret_cast<void*>(ISR_callback), std::memory_order_release);
-}
-
-void Encoder::setup(void (*ISR_callback)(void), void (*ISR_button)(void))
-{
-	setup(ISR_callback);
-	buttonCallback_.store(reinterpret_cast<void*>(ISR_button), std::memory_order_release);
-}
-
-//////////////////////////
-/// Encoder State      ///
-//////////////////////////
-
-int8_t Encoder::updateOldABState()
-{
-	int8_t oldAB = oldAB_.load(std::memory_order_acquire);
-	// Shift left 2 bits and append current A/B levels (each level is 1 bit)
-	oldAB = (oldAB << 2) | (((gpio_get_level(bPin_) << 1) | gpio_get_level(aPin_)) & 0x03);
-	oldAB_.store(oldAB, std::memory_order_release);
-	return oldAB;
+	encoder_cb_.store(encoder_cb);
+	btn_cb_.store(btn_cb);
 }
 
 //////////////////////////
 /// Interrupt Handlers ///
 //////////////////////////
 
-void IRAM_ATTR Encoder::encoderISR()
+void IRAM_ATTR Encoder::isr_handler()
 {
-	if(!isEnabled_)
-		return;
-
-	unsigned long now = esp_timer_get_time() / 1000;
-	if((now - lastInterruptTime) < ENCODER_DEBOUNCE_DELAY)
-		return;
-	lastInterruptTime = now;
-
-	BaseType_t higherPriorityTaskWoken = pdFALSE;
-	vTaskNotifyGiveFromISR(encoderTaskHandle, &higherPriorityTaskWoken);
-	portYIELD_FROM_ISR(higherPriorityTaskWoken);
+	static uint32_t last_isr = 0;
+	const auto now = xTaskGetTickCountFromISR();
+	if(now - last_isr > DEBOUNCE_MS)
+	{
+		last_isr = now;
+		BaseType_t wake = pdFALSE;
+		vTaskNotifyGiveFromISR(encoderTaskHandle, &wake);
+		portYIELD_FROM_ISR(wake);
+	}
 }
 
-void IRAM_ATTR Encoder::buttonISR()
+void IRAM_ATTR Encoder::btn_isr_handler()
 {
-	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-	vTaskNotifyGiveFromISR(buttonTaskHandle, &xHigherPriorityTaskWoken);
-	portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+	static uint32_t last_isr = 0;
+	const auto now = xTaskGetTickCountFromISR();
+	if(now - last_isr > DEBOUNCE_MS)
+	{
+		last_isr = now;
+		BaseType_t wake = pdFALSE;
+		vTaskNotifyGiveFromISR(xTaskGetCurrentTaskHandle(), &wake);
+		portYIELD_FROM_ISR(wake);
+	}
 }
 
 //////////////////////////
 /// Task Functions     ///
 //////////////////////////
-void Encoder::EncoderMonitorTask(void* param)
+void Encoder::monitor_encoder()
 {
-	Encoder* encoder = static_cast<Encoder*>(param);
-
-	// Create an EncoderData struct instance with the current state.
-
+	uint8_t state = 0;
 	while(true)
 	{
-		if(ulTaskNotifyTake(pdTRUE, portMAX_DELAY))
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		state = (state << 2) | (((gpio_get_level(dt_) << 1) | gpio_get_level(clk_)) & 0x03);
+		//	state = (state << 2) | (gpio_get_level(dt_) << 1) | gpio_get_level(clk_);
+		if(auto dir = STATE_TABLE[state & 0x0F])
 		{
-			unsigned long now = esp_timer_get_time() / 1000;
-			if(!encoder->isEnabled_)
-				continue;
-			EncoderData data;
-			data.position = encoder->encoderPosition_.load();
-			data.steps = encoder->encoderSteps_;
-			data.oldDirection = encoder->oldDirection_.load();
-			data.maxValue = encoder->maxEncoderValue_;
-			data.minValue = encoder->minEncoderValue_;
-			data.lastMovementTime = encoder->lastMovementTime_.load();
-
-			int8_t oldAB = encoder->updateOldABState();
-			int8_t direction = encoder->encoderStates_[oldAB & 0x0F];
-
-			if(direction != 0)
-			{
-				// Update the position using the helper function
-				encoder->updatePosition(data, direction, now, encoder->rotaryAccelerationCoef_);
-				// Wrap the value if necessary
-				encoder->wrapPosition(data);
-
-				// Save updated state back to the encoder object
-				encoder->encoderPosition_.store(data.position);
-				encoder->lastMovementTime_.store(now);
-				encoder->oldDirection_.store(direction);
-			}
-			// Call user callback if registered
-			if(auto callback = reinterpret_cast<void (*)()>(
-				   encoder->encoderCallback_.load(std::memory_order_acquire)))
-			{
-				callback();
-			}
+			update_position(dir);
+			if(auto cb = reinterpret_cast<void (*)()>(encoder_cb_.load(std::memory_order_acquire)))
+				cb();
 		}
-		vTaskDelay(pdMS_TO_TICKS(10));
+		vTaskDelay(1);
 	}
-	vTaskDelete(NULL);
 }
-
-// // Task to monitor encoder rotation
-// void Encoder::EncoderMonitorTask(void* param)
-// {
-// 	auto* encoder = static_cast<Encoder*>(param);
-// 	int8_t currentDirection = 0;
-
-// 	while(true)
-// 	{
-// 		if(ulTaskNotifyTake(pdTRUE, portMAX_DELAY))
-// 		{
-// 			unsigned long now = esp_timer_get_time() / 1000;
-// 			if(!encoder->isEnabled_)
-// 				continue;
-
-// 			int8_t oldAB = encoder->updateOldABState();
-// 			currentDirection = encoder->encoderStates_[oldAB & 0x0F];
-
-// 			long encoderPosition = encoder->encoderPosition_.load();
-// 			const uint8_t steps = encoder->encoderSteps_;
-
-// 			if(currentDirection != 0)
-// 			{
-// 				long prevCount = encoderPosition / steps;
-// 				encoderPosition += currentDirection;
-// 				long newCount = encoderPosition / steps;
-
-// 				// Apply acceleration adjustment if enabled and direction is maintained
-// 				if(newCount != prevCount && encoder->rotaryAccelerationCoef_ > 1)
-// 				{
-// 					int8_t lastDirection = encoder->oldDirection_.load();
-// 					if(currentDirection == lastDirection && currentDirection != 0)
-// 					{
-// 						unsigned long timeSinceLastMotion = now - encoder->lastMovementTime_.load();
-// 						if(timeSinceLastMotion < ACCELERATION_LONG_CUTOFF)
-// 						{
-// 							unsigned long limitedTime =
-// 								std::max(ACCELERATION_SHORT_CUTOFF, timeSinceLastMotion);
-// 							int adjustment = encoder->rotaryAccelerationCoef_ / limitedTime;
-// 							encoderPosition += (currentDirection > 0 ? adjustment : -adjustment);
-// 						}
-// 					}
-// 				}
-
-// 				// Wrap around if out of boundaries
-// 				long minVal = encoder->minEncoderValue_ / steps;
-// 				long maxVal = encoder->maxEncoderValue_ / steps;
-// 				long range = maxVal - minVal + 1;
-// 				long currVal = encoderPosition / steps;
-// 				if(currVal > maxVal || currVal < minVal)
-// 				{
-// 					long wrappedValue = ((currVal - minVal) % range + range) % range + minVal;
-// 					encoderPosition = wrappedValue * steps;
-// 				}
-
-// 				encoder->encoderPosition_.store(encoderPosition);
-// 				encoder->lastMovementTime_.store(now);
-// 				encoder->oldDirection_.store(currentDirection);
-// 			}
-// 			// Call user callback if registered
-// 			if(auto callback = reinterpret_cast<void (*)()>(
-// 				   encoder->encoderCallback_.load(std::memory_order_acquire)))
-// 			{
-// 				callback();
-// 			}
-// 		}
-// 		vTaskDelay(pdMS_TO_TICKS(10));
-// 	}
-// 	vTaskDelete(NULL);
-// }
-
-// Helper function for debouncing; returns true if the debounce period has elapsed
-bool Encoder::debounce(bool currentState, unsigned long& lastTime, unsigned long delay)
+void Encoder::monitor_button()
 {
-	unsigned long now = esp_timer_get_time() / 1000;
-	if(now - lastTime > delay)
-	{
-		lastTime = now;
-		return currentState;
-	}
-	return false;
-}
-
-// Task to monitor the encoder button
-void Encoder::ButtonMonitorTask(void* param)
-{
-	auto* encoder = static_cast<Encoder*>(param);
-	unsigned long lastDebounceTime = 0;
-
+	uint32_t last_press = 0;
 	while(true)
 	{
-		if(ulTaskNotifyTake(pdTRUE, portMAX_DELAY))
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		if(xTaskGetTickCount() - last_press > pdMS_TO_TICKS(DEBOUNCE_MS))
 		{
-			if(!encoder->isEnabled_)
+			const bool pressed = !gpio_get_level(btn_);
+			ButtonState currentState = button();
+			if(pressed && currentState == ButtonState::UP)
 			{
-				encoder->buttonState_.store(ButtonState::BTN_DISABLED);
-				continue;
+				button_state(ButtonState::PUSHED);
 			}
-			// Button is assumed active low
-			bool buttonPressed = !gpio_get_level(encoder->buttonPin_);
-			if(encoder->debounce(buttonPressed, lastDebounceTime, DEBOUNCE_DELAY))
+			else if(!pressed && currentState == ButtonState::DOWN)
 			{
-				ButtonState currentState = encoder->buttonState_.load();
-				if(buttonPressed && currentState == ButtonState::UP)
-				{
-					encoder->buttonState_.store(ButtonState::PUSHED);
-				}
-				else if(!buttonPressed && currentState == ButtonState::DOWN)
-				{
-					encoder->buttonState_.store(ButtonState::RELEASED);
-				}
-				else
-				{
-					encoder->buttonState_.store(buttonPressed ? ButtonState::DOWN :
-																ButtonState::UP);
-				}
-				// Call user callback if registered
-				if(auto callback = reinterpret_cast<void (*)()>(
-					   encoder->buttonCallback_.load(std::memory_order_acquire)))
-				{
-					callback();
-				}
+				button_state(ButtonState::RELEASED);
 			}
+			else
+			{
+				button_state(pressed ? ButtonState::DOWN : ButtonState::UP);
+			}
+			if(auto cb = reinterpret_cast<void (*)()>(btn_cb_.load(std::memory_order_acquire)))
+				cb();
 		}
-		vTaskDelay(pdMS_TO_TICKS(10));
+		vTaskDelay(1);
 	}
-	vTaskDelete(NULL);
 }
 
 //////////////////////////
 /// Value and Reset    ///
 //////////////////////////
 
-void Encoder::setBoundaries(long minValue, long maxValue, bool circleValues)
+void Encoder::set_range(long minValue, long maxValue, bool circleValues)
 {
-	minEncoderValue_ = minValue * encoderSteps_;
-	maxEncoderValue_ = maxValue * encoderSteps_;
-	circleValues_ = circleValues;
+	EncoderConfig config(config_->steps, maxValue, minValue, circleValues);
+	configure(config);
 }
 
-long Encoder::readEncoder() const
+long Encoder::read() const
 {
-	long position = encoderPosition_.load() / encoderSteps_;
-	if(position > maxEncoderValue_ / encoderSteps_)
-		return maxEncoderValue_ / encoderSteps_;
-	if(position < minEncoderValue_ / encoderSteps_)
-		return minEncoderValue_ / encoderSteps_;
+
+	const EncoderConfig& conf = *config_;
+
+	long position = state_.position.load() / conf.steps;
+	if(position > conf.max_count)
+		return conf.max_count;
+	if(position < conf.min_count)
+		return conf.min_count;
 	return position;
 }
 
 void Encoder::reset(long newValue)
 {
-	const long steps = encoderSteps_;
-	long minVal = minEncoderValue_ / steps;
-	long maxVal = maxEncoderValue_ / steps;
-	long range = maxVal - minVal + 1;
+	const EncoderConfig& conf = *config_;
+	const long steps = conf.steps;
+	long bounded_count;
 
-	// Wrap newValue into the valid range using modulo arithmetic
-	long wrappedValue = ((newValue - minVal) % range + range) % range + minVal;
-	encoderPosition_ = wrappedValue * steps + correctionOffset_;
-
-	// Double-check boundaries after applying correction
-	if(encoderPosition_ > maxEncoderValue_ || encoderPosition_ < minEncoderValue_)
+	if(conf.circular)
 	{
-		wrappedValue =
-			((encoderPosition_ / steps - minEncoderValue_ / steps) % range + range) % range +
-			minVal;
-		encoderPosition_ = wrappedValue * steps;
+		const long range = conf.range;
+		if(range > 0)
+		{
+			bounded_count = ((newValue - conf.min_count) % range + range) % range + conf.min_count;
+		}
+		else
+		{
+			bounded_count = conf.min_count;
+		}
 	}
-	lastReadEncoderPosition_ = encoderPosition_ / steps;
+	else
+	{
+		bounded_count = etl::clamp(newValue, conf.min_count, conf.max_count);
+	}
+
+	long position = bounded_count * steps;
+	state_.position.store(position);
 }
 
 //////////////////////////
 /// Button Queries     ///
 //////////////////////////
 
-bool Encoder::isEncoderButtonDown() const
+bool Encoder::is_btn_clicked(unsigned long max_wait)
 {
-	// Assuming active-low button logic: low (0) means pressed
-	return gpio_get_level(buttonPin_) != 0;
-}
-
-bool Encoder::isEncoderButtonClicked(unsigned long maximumWaitMilliseconds)
-{
-	enum class ButtonClickState
+	enum class State
 	{
 		IDLE,
-		WAIT_FOR_RELEASE,
-		WAIT_FOR_TIMEOUT
+		DEBOUNCING_PRESS,
+		WAIT_RELEASE,
+		DEBOUNCING_RELEASE
 	};
-	static ButtonClickState state = ButtonClickState::IDLE;
-	static unsigned long waitStartTime = 0;
-	static unsigned long lastDebounceTime = 0;
-	static bool wasTimeouted = false;
+	static State state = State::IDLE;
+	static unsigned long debounce_start = 0;
+	static unsigned long press_time = 0;
 
-	bool buttonPressed = !gpio_get_level(buttonPin_);
-	if(!debounce(buttonPressed, lastDebounceTime, DEBOUNCE_DELAY))
-	{
-		return false;
-	}
+	bool pressed = !gpio_get_level(btn_);
+	unsigned long now = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
 	switch(state)
 	{
-		case ButtonClickState::IDLE:
-			if(buttonPressed)
+		case State::IDLE:
+			if(pressed)
 			{
-				waitStartTime = esp_timer_get_time() / 1000;
-				state = ButtonClickState::WAIT_FOR_RELEASE;
+				debounce_start = now;
+				state = State::DEBOUNCING_PRESS;
 			}
 			break;
-		case ButtonClickState::WAIT_FOR_RELEASE:
-			if(!buttonPressed)
+
+		case State::DEBOUNCING_PRESS:
+			if(now - debounce_start >= DEBOUNCE_MS)
 			{
-				if((esp_timer_get_time() / 1000) - waitStartTime > DEBOUNCE_DELAY)
-				{
-					wasTimeouted = false;
-					state = ButtonClickState::IDLE;
-					return true;
+				if(pressed)
+				{ // Valid press
+					press_time = now;
+					state = State::WAIT_RELEASE;
 				}
 				else
-				{
-					state = ButtonClickState::IDLE;
+				{ // Noise, reset
+					state = State::IDLE;
 				}
 			}
-			else if((esp_timer_get_time() / 1000) - waitStartTime > maximumWaitMilliseconds)
+			break;
+
+		case State::WAIT_RELEASE:
+			if(!pressed)
 			{
-				wasTimeouted = true;
-				state = ButtonClickState::IDLE;
+				debounce_start = now;
+				state = State::DEBOUNCING_RELEASE;
+			}
+			else if(now - press_time > max_wait)
+			{
+				state = State::IDLE; // Timeout
 			}
 			break;
-		case ButtonClickState::WAIT_FOR_TIMEOUT:
-			if(!buttonPressed)
+
+		case State::DEBOUNCING_RELEASE:
+			if(now - debounce_start >= DEBOUNCE_MS)
 			{
-				state = ButtonClickState::IDLE;
-			}
-			else if((esp_timer_get_time() / 1000) - waitStartTime > maximumWaitMilliseconds)
-			{
-				wasTimeouted = true;
-				state = ButtonClickState::IDLE;
+				state = State::IDLE;
+				return (!pressed && (now - press_time <= max_wait));
 			}
 			break;
 	}
 	return false;
 }
 
-// Helper: Update position with optional acceleration
-long Encoder::updatePosition(EncoderData& data, int8_t direction, unsigned long currentTime,
-							 unsigned long acceCoef)
+/*This function updates the encoder’s position based on a direction input (dir), which is typically
+ * +1 or -1, representing a clockwise or counterclockwise turn. It optionally applies acceleration
+ * when crossing step boundaries and ensures the new position respects configured bounds.*/
+void Encoder::update_position(int8_t dir)
 {
-	// Update the raw position
-	long prevCount = data.position / data.steps;
-	data.position += direction;
-	long newCount = data.position / data.steps;
+	const EncoderConfig& conf = *config_;
+	const auto now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+	const long current_position = state_.position.load();
+	const long current_count = current_position / conf.steps;
+	long new_pos = current_position + dir;
+	const long new_count = new_pos / conf.steps;
 
-	// If there is a count change and acceleration is enabled...
-	if(newCount != prevCount && acceCoef > 1)
+	// Apply acceleration only when crossing step boundaries
+	if(conf.acceleration && dir == state_.direction && new_count != current_count)
 	{
-		if(direction == data.oldDirection && direction != 0)
+		const unsigned long time_since_last = now - state_.last_update;
+		if(time_since_last < ACCELERATION_LONG_CUTOFF)
 		{
-			unsigned long timeSinceLast = currentTime - data.lastMovementTime;
-			if(timeSinceLast < ACCELERATION_LONG_CUTOFF)
-			{
-				// Limit the time interval to avoid excessive acceleration
-				unsigned long limitedTime = std::max(ACCELERATION_SHORT_CUTOFF, timeSinceLast);
-				int adjustment = acceCoef / limitedTime;
-				data.position += (direction > 0 ? adjustment : -adjustment);
-			}
+			const unsigned long limited_time = std::max(ACCELERATION_SHORT_CUTOFF, time_since_last);
+			new_pos += dir * (conf.acceleration / limited_time);
 		}
 	}
-	return data.position;
+
+	state_.position.store(apply_bounds(new_pos));
+	state_.direction.store(dir);
+	state_.last_update.store(now);
 }
 
-long Encoder::wrapPosition(EncoderData& data)
+/*apply_bounds ensures the encoder position stays within configured limits, either by clamping
+ * (non-circular) or wrapping (circular). It operates on the count (steps) but returns a position.*/
+long Encoder::apply_bounds(long value) const
 {
-	long minVal = data.minValue / data.steps;
-	long maxVal = data.maxValue / data.steps;
-	long range = maxVal - minVal + 1;
-	long currentValue = data.position / data.steps;
+	const EncoderConfig& conf = *config_;
+	const long current_count = value / conf.steps;
+	long bounded_count = current_count;
 
-	if(currentValue > maxVal || currentValue < minVal)
+	if(conf.circular)
 	{
-		// Apply modulo arithmetic to wrap the value
-		long wrappedValue = ((currentValue - minVal) % range + range) % range + minVal;
-		data.position = wrappedValue * data.steps;
+		const long range = conf.range;
+		if(range > 0) // Prevent modulo by zero or negative
+		{
+			bounded_count =
+				((current_count - conf.min_count) % range + range) % range + conf.min_count;
+		}
 	}
-	return data.position;
+	else
+	{
+		bounded_count = etl::clamp(current_count, conf.min_count, conf.max_count);
+	}
+
+	// Only modify position if count actually changed
+	return (bounded_count != current_count) ? bounded_count * conf.steps : value;
 }
