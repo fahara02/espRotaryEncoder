@@ -15,7 +15,11 @@ const MenuItem menuItems[] = {{"Item 1", action1},
 							  {"Item 5", action3}};
 constexpr size_t MENU_ITEM_COUNT = sizeof(menuItems) / sizeof(menuItems[0]);
 MenuSelector menu(menuItems, MENU_ITEM_COUNT, 4, pinA, pinB, btn);
-void onSelectionChanged(size_t index) { Serial.println(menu.get_selected_item()->label); }
+void onSelectionChanged(size_t index)
+{
+	Serial.print("Selected: ");
+	Serial.println(menuItems[index].label);
+}
 void onItemSelected(size_t index) { Serial.println("Item confirmed"); }
 void setup()
 {

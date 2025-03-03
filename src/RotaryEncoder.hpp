@@ -15,12 +15,14 @@
 
 namespace Rotary
 {
+
 enum class ButtonState
 {
-	DOWN = 0,
-	PUSHED = 1,
-	UP = 2,
-	RELEASED = 3,
+	UP = 0,
+	DEBOUNCE_PRESS,
+	PRESSED,
+	DEBOUNCE_RELEASE,
+	RELEASED,
 	BTN_DISABLED = 99,
 };
 struct EncoderConfig
@@ -66,7 +68,7 @@ class Encoder
 	void configure(const EncoderConfig& config);
 	void set_range(long minValue = -100, long maxValue = 100, bool circleValues = false);
 
-	void begin();
+	void init();
 	void reset(long newValue = 0);
 	long read() const;
 	ButtonState button() const { return btn_state_.load(); }
@@ -74,6 +76,10 @@ class Encoder
 
 	bool is_btn_clicked(unsigned long max_wait);
 	void set_callbacks(void (*encoder_cb)(), void (*btn_cb)() = nullptr);
+
+  protected:
+	unsigned long get_acceleration() const;
+	void set_acceleration(unsigned long acc);
 
   private:
 	struct State
@@ -88,6 +94,7 @@ class Encoder
 	void monitor_encoder();
 	void monitor_button();
 	void update_position(int8_t dir);
+	bool button_pressed() const;
 	long apply_bounds(long value) const;
 	void configure_pin(gpio_num_t pin, gpio_int_type_t intr_type, PullType pull_type);
 

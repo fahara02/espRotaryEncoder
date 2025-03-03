@@ -28,6 +28,20 @@ void Encoder::configure(const EncoderConfig& cfg)
 	config_ = std::make_unique<EncoderConfig>(cfg);
 }
 
+unsigned long Encoder::get_acceleration() const { return config_->acceleration; }
+
+void Encoder::set_acceleration(unsigned long acc)
+{
+	EncoderConfig config(config_->steps, config_->max_value, config_->min_value, config_->circular,
+						 acc);
+	configure(config);
+}
+void Encoder::set_range(long minValue, long maxValue, bool circleValues)
+{
+	EncoderConfig config(config_->steps, maxValue, minValue, circleValues);
+	configure(config);
+}
+
 //////////////////////////
 /// GPIO Configuration ///
 //////////////////////////
@@ -86,7 +100,7 @@ void Encoder::init_gpio()
 	}
 }
 
-void Encoder::begin()
+void Encoder::init()
 {
 	init_gpio();
 	xTaskCreatePinnedToCore([](void* arg) { static_cast<Encoder*>(arg)->monitor_encoder(); },
@@ -136,7 +150,7 @@ void IRAM_ATTR Encoder::btn_isr_handler()
 	{
 		last_isr = now;
 		BaseType_t wake = pdFALSE;
-		vTaskNotifyGiveFromISR(xTaskGetCurrentTaskHandle(), &wake);
+		vTaskNotifyGiveFromISR(buttonTaskHandle, &wake);
 		portYIELD_FROM_ISR(wake);
 	}
 }
@@ -151,9 +165,10 @@ void Encoder::monitor_encoder()
 	{
 		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 		state = (state << 2) | (((gpio_get_level(dt_) << 1) | gpio_get_level(clk_)) & 0x03);
-		//	state = (state << 2) | (gpio_get_level(dt_) << 1) | gpio_get_level(clk_);
+
 		if(auto dir = STATE_TABLE[state & 0x0F])
 		{
+
 			update_position(dir);
 			if(auto cb = reinterpret_cast<void (*)()>(encoder_cb_.load(std::memory_order_acquire)))
 				cb();
@@ -161,56 +176,114 @@ void Encoder::monitor_encoder()
 		vTaskDelay(1);
 	}
 }
+bool Encoder::button_pressed() const
+{
+	if(btn_pull_ == PullType::EXTERNAL_PULLUP || btn_pull_ == PullType::INTERNAL_PULLUP)
+	{
+		return !gpio_get_level(btn_);
+	}
+	else
+	{
+		return gpio_get_level(btn_);
+	}
+}
+
 void Encoder::monitor_button()
 {
-	uint32_t last_press = 0;
+	ButtonState state = ButtonState::UP;
+	uint32_t last_transition = xTaskGetTickCount();
+	static const TickType_t debounce_ticks = pdMS_TO_TICKS(DEBOUNCE_MS);
+
 	while(true)
 	{
-		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-		if(xTaskGetTickCount() - last_press > pdMS_TO_TICKS(DEBOUNCE_MS))
+		// Wait for notification or timeout (10ms)
+		ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+		const uint32_t now = xTaskGetTickCount();
+		const bool pressed = button_pressed(); // Single read per iteration
+
+		switch(state)
 		{
-			const bool pressed = !gpio_get_level(btn_);
-			ButtonState currentState = button();
-			if(pressed && currentState == ButtonState::UP)
-			{
-				button_state(ButtonState::PUSHED);
-			}
-			else if(!pressed && currentState == ButtonState::DOWN)
-			{
-				button_state(ButtonState::RELEASED);
-			}
-			else
-			{
-				button_state(pressed ? ButtonState::DOWN : ButtonState::UP);
-			}
-			if(auto cb = reinterpret_cast<void (*)()>(btn_cb_.load(std::memory_order_acquire)))
-				cb();
+			case ButtonState::UP:
+				if(pressed)
+				{
+					state = ButtonState::DEBOUNCE_PRESS;
+					last_transition = now;
+					Serial.println("Transition: UP -> DEBOUNCE_PRESS");
+				}
+				break;
+
+			case ButtonState::DEBOUNCE_PRESS:
+				if((now - last_transition) > debounce_ticks)
+				{
+					if(pressed)
+					{
+						state = ButtonState::PRESSED;
+						Serial.println("Transition: DEBOUNCE_PRESS -> PRESSED");
+					}
+					else
+					{
+						state = ButtonState::UP;
+						Serial.println("Transition: DEBOUNCE_PRESS -> UP (false alarm)");
+					}
+				}
+				break;
+
+			case ButtonState::PRESSED:
+				if(!pressed)
+				{
+					state = ButtonState::DEBOUNCE_RELEASE;
+					last_transition = now;
+					Serial.println("Transition: PRESSED -> DEBOUNCE_RELEASE");
+				}
+				break;
+
+			case ButtonState::DEBOUNCE_RELEASE:
+				if((now - last_transition) > debounce_ticks)
+				{
+					if(!pressed)
+					{
+						state = ButtonState::RELEASED;
+						Serial.println("Transition: DEBOUNCE_RELEASE -> RELEASED");
+					}
+					else
+					{
+						state = ButtonState::PRESSED;
+						Serial.println("Transition: DEBOUNCE_RELEASE -> PRESSED (bounce detected)");
+					}
+				}
+				break;
+
+			case ButtonState::RELEASED:
+				if(auto cb = reinterpret_cast<void (*)()>(btn_cb_.load(std::memory_order_acquire)))
+				{
+					ESP_LOGI(LOG_TAG, "Invoking button callback on release");
+					cb();
+				}
+				else
+				{
+					ESP_LOGW(LOG_TAG, "No button callback set");
+				}
+				state = ButtonState::UP;
+				Serial.println("Transition: RELEASED -> UP");
+				break;
 		}
-		vTaskDelay(1);
 	}
 }
 
 //////////////////////////
-/// Value and Reset    ///
+/// Value and Reset ///
 //////////////////////////
-
-void Encoder::set_range(long minValue, long maxValue, bool circleValues)
-{
-	EncoderConfig config(config_->steps, maxValue, minValue, circleValues);
-	configure(config);
-}
-
 long Encoder::read() const
 {
 
 	const EncoderConfig& conf = *config_;
 
-	long position = state_.position.load() / conf.steps;
-	if(position > conf.max_count)
+	long count = state_.position.load() / conf.steps;
+	if(count > conf.max_count)
 		return conf.max_count;
-	if(position < conf.min_count)
+	if(count < conf.min_count)
 		return conf.min_count;
-	return position;
+	return count;
 }
 
 void Encoder::reset(long newValue)
@@ -257,9 +330,9 @@ bool Encoder::is_btn_clicked(unsigned long max_wait)
 	static unsigned long debounce_start = 0;
 	static unsigned long press_time = 0;
 
-	bool pressed = !gpio_get_level(btn_);
+	const bool pressed = button_pressed();
 	unsigned long now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-
+	ESP_LOGD(LOG_TAG, "State: %d, Pressed: %d, Now: %lu", (int)state, pressed, now);
 	switch(state)
 	{
 		case State::IDLE:
@@ -307,7 +380,9 @@ bool Encoder::is_btn_clicked(unsigned long max_wait)
 	}
 	return false;
 }
-
+//////////////////////////
+/// Core Logic    ///
+//////////////////////////
 /*This function updates the encoder’s position based on a direction input (dir), which is typically
  * +1 or -1, representing a clockwise or counterclockwise turn. It optionally applies acceleration
  * when crossing step boundaries and ensures the new position respects configured bounds.*/
@@ -361,3 +436,175 @@ long Encoder::apply_bounds(long value) const
 	// Only modify position if count actually changed
 	return (bounded_count != current_count) ? bounded_count * conf.steps : value;
 }
+
+// void Encoder::monitor_button()
+// {
+// 	ButtonState state = ButtonState::UP;
+// 	uint32_t last_transition = xTaskGetTickCount();
+
+// 	while(true)
+// 	{
+// 		// Use a short timeout so the task wakes up even if no notification occurs.
+// 		ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+// 		uint32_t now = xTaskGetTickCount();
+// 		bool pressed = button_pressed();
+
+// 		switch(state)
+// 		{
+// 			case ButtonState::UP:
+// 				if(pressed)
+// 				{
+// 					state = ButtonState::DEBOUNCE_PRESS;
+// 					last_transition = now;
+// 					Serial.println("Transition: UP -> DEBOUNCE_PRESS");
+// 				}
+// 				break;
+
+// 			case ButtonState::DEBOUNCE_PRESS:
+// 				if((now - last_transition) > pdMS_TO_TICKS(DEBOUNCE_MS))
+// 				{
+// 					if(pressed)
+// 					{
+// 						state = ButtonState::PRESSED;
+// 						Serial.println("Transition: DEBOUNCE_PRESS -> PRESSED");
+// 					}
+// 					else
+// 					{
+// 						state = ButtonState::UP;
+// 						Serial.println("Transition: DEBOUNCE_PRESS -> UP (false alarm)");
+// 					}
+// 				}
+// 				break;
+
+// 			case ButtonState::PRESSED:
+// 				if(!pressed)
+// 				{
+// 					state = ButtonState::DEBOUNCE_RELEASE;
+// 					last_transition = now;
+// 					Serial.println("Transition: PRESSED -> DEBOUNCE_RELEASE");
+// 				}
+// 				break;
+
+// 			case ButtonState::DEBOUNCE_RELEASE:
+// 				if((now - last_transition) > pdMS_TO_TICKS(DEBOUNCE_MS))
+// 				{
+// 					if(!pressed)
+// 					{
+// 						state = ButtonState::RELEASED;
+// 						Serial.println("Transition: DEBOUNCE_RELEASE -> RELEASED");
+// 					}
+// 					else
+// 					{
+// 						state = ButtonState::PRESSED;
+// 						Serial.println("Transition: DEBOUNCE_RELEASE -> PRESSED (bounce detected)");
+// 					}
+// 				}
+// 				break;
+
+// 			case ButtonState::RELEASED:
+// 				if(auto cb = reinterpret_cast<void (*)()>(btn_cb_.load(std::memory_order_acquire)))
+// 				{
+// 					ESP_LOGI(LOG_TAG, "Invoking button callback on release");
+// 					cb();
+// 				}
+// 				else
+// 				{
+// 					ESP_LOGW(LOG_TAG, "No button callback set");
+// 				}
+// 				state = ButtonState::UP;
+// 				Serial.println("Transition: RELEASED -> UP");
+// 				break;
+// 		}
+
+// 		vTaskDelay(1); // small delay to avoid hogging the CPU
+// 	}
+// }
+
+// void Encoder::monitor_button()
+// {
+// 	ButtonState state = ButtonState::UP;
+// 	uint32_t last_transition = xTaskGetTickCount();
+
+// 	while(true)
+// 	{
+// 		// Use a short timeout so the task wakes up even if no notification occurs.
+// 		ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+// 		uint32_t now = xTaskGetTickCount();
+// 		bool pressed = button_pressed();
+
+// 		switch(state)
+// 		{
+// 			case ButtonState::UP:
+// 				if(pressed)
+// 				{
+// 					state = ButtonState::DEBOUNCE_PRESS;
+// 					last_transition = now;
+// 					Serial.println("Transition: UP -> DEBOUNCE_PRESS");
+// 				}
+// 				break;
+
+// 			case ButtonState::DEBOUNCE_PRESS:
+// 				if((now - last_transition) > pdMS_TO_TICKS(DEBOUNCE_MS))
+// 				{
+// 					if(pressed)
+// 					{
+// 						state = ButtonState::PRESSED;
+// 						Serial.println("Transition: DEBOUNCE_PRESS -> PRESSED");
+// 					}
+// 					else
+// 					{
+// 						state = ButtonState::UP;
+// 						Serial.println("Transition: DEBOUNCE_PRESS -> UP (false alarm)");
+// 					}
+// 				}
+// 				break;
+
+// 			case ButtonState::PRESSED:
+// 				if(!pressed)
+// 				{
+// 					state = ButtonState::DEBOUNCE_RELEASE;
+// 					last_transition = now;
+// 					Serial.println("Transition: PRESSED -> DEBOUNCE_RELEASE");
+// 				}
+// 				break;
+
+// 			case ButtonState::DEBOUNCE_RELEASE:
+// 				if((now - last_transition) > pdMS_TO_TICKS(DEBOUNCE_MS))
+// 				{
+// 					if(!pressed)
+// 					{
+// 						state = ButtonState::WAIT_RELEASE;
+// 						Serial.println("Transition: DEBOUNCE_RELEASE -> WAIT_RELEASE");
+// 					}
+// 					else
+// 					{
+// 						state = ButtonState::PRESSED;
+// 						Serial.println("Transition: DEBOUNCE_RELEASE -> PRESSED (bounce detected)");
+// 					}
+// 				}
+// 				break;
+
+// 			case ButtonState::WAIT_RELEASE:
+// 				// Additional logic can be added here if needed before releasing
+// 				state = ButtonState::RELEASED;
+// 				Serial.println("Transition: WAIT_RELEASE -> RELEASED");
+// 				break;
+
+// 			case ButtonState::RELEASED:
+// 				if(auto cb = reinterpret_cast<void (*)()>(btn_cb_.load(std::memory_order_acquire)))
+// 				{
+// 					ESP_LOGI(LOG_TAG, "Invoking button callback on release");
+// 					cb();
+// 				}
+// 				else
+// 				{
+// 					ESP_LOGW(LOG_TAG, "No button callback set");
+// 				}
+// 				state = ButtonState::UP;
+// 				Serial.println("Transition: RELEASED -> UP");
+// 				break;
+// 		}
+
+// 		vTaskDelay(1); // small delay to avoid hogging the CPU
+// 	}
+// }
