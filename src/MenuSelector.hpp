@@ -19,30 +19,31 @@ class MenuSelector : public Rotary::Encoder
 		Rotary::Encoder(1, aPin, bPin, buttonPin, encoderPinPull, buttonPinPull), menuItems_(items),
 		itemCount_(itemCount), pulsesPerClick_(pulsesPerClick), previousIndex_(0)
 	{
+
 		if(!items || itemCount == 0 || pulsesPerClick == 0)
 		{
 			itemCount_ = 0;
 			return;
 		}
+
 		instance_ = this;
 	}
 
 	void init()
 	{
-		long maxValue = (itemCount_ - 1);
-		configure(Rotary::EncoderConfig(1, maxValue, 0, true));
 		Rotary::Encoder::init();
 		set_callbacks(encoder_callback, button_callback);
 
-		if(selectionChangedCb_)
-		{
-			selectionChangedCb_(0); // Initialize with first item
-		}
+		long maxValue = (itemCount_ - 1) * pulsesPerClick_;
+		configure(Rotary::EncoderConfig(1, maxValue, 0, true /* circular */));
 	}
 
 	void set_selection_changed_Cb(selection_changed_cb cb) { selectionChangedCb_ = cb; }
+
 	void set_item_selected_cb(item_selected_cb cb) { itemSelectedCb_ = cb; }
-	size_t get_selected_index() const { return read(); }
+
+	size_t get_selected_index() const { return read() / pulsesPerClick_; }
+
 	const MenuItem* get_selected_item() const
 	{
 		size_t index = get_selected_index();
@@ -77,8 +78,8 @@ class MenuSelector : public Rotary::Encoder
 	void handle_encoder()
 	{
 		long value = read();
-		size_t currentIndex = value;
-		if(currentIndex != previousIndex_ && currentIndex < itemCount_)
+		size_t currentIndex = value / pulsesPerClick_;
+		if(currentIndex != previousIndex_) // Removed redundant check
 		{
 			previousIndex_ = currentIndex;
 			if(selectionChangedCb_)
@@ -108,4 +109,5 @@ class MenuSelector : public Rotary::Encoder
 	}
 };
 
+// Initialize static member
 MenuSelector* MenuSelector::instance_ = nullptr;
