@@ -91,19 +91,17 @@ class MenuSelector : public Rotary::Encoder
 
 	void handle_button()
 	{
-		if(is_btn_clicked(100))
+
+		size_t index = get_selected_index();
+		if(index < itemCount_)
 		{
-			size_t index = get_selected_index();
-			if(index < itemCount_)
+			if(menuItems_[index].action)
 			{
-				if(menuItems_[index].action)
-				{
-					menuItems_[index].action();
-				}
-				if(itemSelectedCb_)
-				{
-					itemSelectedCb_(index);
-				}
+				menuItems_[index].action();
+			}
+			if(itemSelectedCb_)
+			{
+				itemSelectedCb_(index);
 			}
 		}
 	}
