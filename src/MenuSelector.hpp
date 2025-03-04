@@ -1,4 +1,8 @@
-#include "RotaryEncoder.hpp"
+
+#ifndef MENU_SELECTOR_HPP
+	#define MENU_SELECTOR_HPP
+
+	#include "RotaryEncoder.hpp"
 
 struct MenuItem
 {
@@ -106,6 +110,6 @@ class MenuSelector : public Rotary::Encoder
 		}
 	}
 };
-
+#endif
 // Initialize static member
 MenuSelector* MenuSelector::instance_ = nullptr;
