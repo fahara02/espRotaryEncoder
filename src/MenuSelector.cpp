@@ -26,9 +26,17 @@ void MenuSelector::init()
 	configure(Rotary::EncoderConfig(1, maxValue, 0, true /* circular */));
 }
 
-void MenuSelector::set_selection_changed_Cb(selection_changed_cb cb) { selectionChangedCb_ = cb; }
+void MenuSelector::set_selection_changed_cb(selection_changed_cb cb, void* user_data)
+{
+	selectionChangedCb_ = cb;
+	selection_changed_user_data_ = user_data;
+}
 
-void MenuSelector::set_item_selected_cb(item_selected_cb cb) { itemSelectedCb_ = cb; }
+void MenuSelector::set_item_selected_cb(item_selected_cb cb, void* user_data)
+{
+	itemSelectedCb_ = cb;
+	item_selected_user_data_ = user_data;
+}
 
 size_t MenuSelector::get_selected_index() const { return read() / pulsesPerClick_; }
 
@@ -63,23 +71,23 @@ void MenuSelector::handle_encoder()
 		previousIndex_ = currentIndex;
 		if(selectionChangedCb_)
 		{
-			selectionChangedCb_(currentIndex);
+			selectionChangedCb_(currentIndex, selection_changed_user_data_);
 		}
 	}
 }
 
 void MenuSelector::handle_button()
 {
-	size_t index = get_selected_index();
-	if(index < itemCount_)
+	size_t currentIndex = get_selected_index();
+	if(currentIndex < itemCount_)
 	{
-		if(menuItems_[index].action)
+		if(menuItems_[currentIndex].action)
 		{
-			menuItems_[index].action();
+			menuItems_[currentIndex].action();
 		}
 		if(itemSelectedCb_)
 		{
-			itemSelectedCb_(index);
+			itemSelectedCb_(currentIndex, item_selected_user_data_);
 		}
 	}
 }
