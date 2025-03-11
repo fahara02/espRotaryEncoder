@@ -6,7 +6,7 @@
 struct MenuItem
 {
 	const char* label;
-	void (*action)();
+	void (*action)(void*);
 };
 
 class MenuSelector : public Rotary::Encoder

@@ -83,7 +83,7 @@ void MenuSelector::handle_button()
 	{
 		if(menuItems_[currentIndex].action)
 		{
-			menuItems_[currentIndex].action();
+			menuItems_[currentIndex].action(item_selected_user_data_);
 		}
 		if(itemSelectedCb_)
 		{
