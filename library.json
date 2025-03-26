@@ -13,7 +13,7 @@
         {
             "name": "Faruk Hannan",
             "email": "idea3d.faruk@gmail.com",
-            "url": "https://yourwebsite.com",
+            "url": "https://microtech.com.bd",
             "maintainer": true
         }
     ],
@@ -33,7 +33,8 @@
         ]
     },
     "dependencies": {
-        "etlcpp/Embedded Template Library": "^20.39.4"
+        "etlcpp/Embedded Template Library": "^20.39.4",
+        "fahara02/Logger": "^1.0.0"
     },
     "headers": [
         "RotaryEncoder.hpp",

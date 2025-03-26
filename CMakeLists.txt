@@ -6,9 +6,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
   "src" 
 )
 
-set(COMPONENT_REQUIRES
-    "ETL"   
-)
+set(COMPONENT_REQUIRES "ETL" "Logger")
 
 register_component()
 
